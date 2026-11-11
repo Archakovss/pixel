@@ -205,6 +205,9 @@ step_db() {
 
     pg_sql "SELECT 1 FROM pg_roles WHERE rolname='core'" | grep -q 1 \
         || pg_run "CREATE ROLE core LOGIN"
+    # Политики в дампе ссылаются на роль platform: без неё pg_restore теряет часть объектов.
+    pg_sql "SELECT 1 FROM pg_roles WHERE rolname='platform'" | grep -q 1 \
+        || pg_run "CREATE ROLE platform LOGIN"
     pg_sql "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1 \
         || pg_createdb "${DB_NAME}"
 
