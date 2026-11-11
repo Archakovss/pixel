@@ -114,17 +114,26 @@ step_snapshot() {
 
     local unpack="$DATA_DIR/restore/unpacked"
     rm -rf "$unpack"; mkdir -p "$unpack"
-    local enc
-    if [ -n "${SRC:-}" ]; then enc="$SRC"; else enc=$(ls -1 "$work"/*.tar.gz.gpg 2>/dev/null | head -1 || true); fi
+    local enc=""
+    local plain_src=""
+    if [ -n "${SRC:-}" ]; then
+        # Зашифрованное — только .gpg. Обычный архив не должен требовать пароль.
+        case "$SRC" in
+            *.gpg) enc="$SRC" ;;
+            *) plain_src="$SRC" ;;
+        esac
+    else
+        enc=$(ls -1 "$work"/*.tar.gz.gpg 2>/dev/null | head -1 || true)
+    fi
     if [ -n "$enc" ]; then
         [ -n "$PASS_FILE" ] && [ -r "$PASS_FILE" ] || { bad "нужен --passphrase-file"; save_state snapshot fail; return 1; }
         info "расшифровываю $(basename "$enc")"
         gpg --batch --quiet --yes --passphrase-file "$PASS_FILE" --decrypt "$enc" > "$work/snapshot.tar.gz" \
             || { bad "расшифровка не удалась (пароль?)"; save_state snapshot fail; return 1; }
     else
-        if [ -n "${SRC:-}" ]; then
-            cp "$SRC" "$work/snapshot.tar.gz" \
-                || { bad "не скопировать $SRC"; save_state snapshot fail; return 1; }
+        if [ -n "$plain_src" ]; then
+            cp "$plain_src" "$work/snapshot.tar.gz" \
+                || { bad "не скопировать $plain_src"; save_state snapshot fail; return 1; }
         else
             local plain
             plain=$(ls -1 "$work"/*.tar.gz 2>/dev/null | head -1 || true)
