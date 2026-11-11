@@ -25,6 +25,9 @@ FROM=""
 PASS_FILE=""
 YES=0
 STEP_ARG=""
+DB_NAME="${DB_NAME:-platform}"          # для учения — отдельная база, не боевая
+CORE_PORT="${CORE_PORT:-3212}"           # порт Ядра на этой машине
+SKIP_WEB="${SKIP_WEB:-0}"                # 1 = не трогать nginx (учение на живом узле)
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -64,7 +67,7 @@ PY
 
 # ── 0. Предохранитель: не восстанавливать поверх живого ──────
 healthy_core() {
-    local url="${CORE_HEALTH_URL:-http://127.0.0.1:3212/health}"
+    local url="${CORE_HEALTH_URL:-http://127.0.0.1:${CORE_PORT}/health}"
     curl -sf --max-time 3 "$url" 2>/dev/null | grep -q '"ok":true'
 }
 
@@ -132,21 +135,21 @@ step_db() {
     # Роль и БД — идемпотентно: если есть, не трогаем.
     sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='core'" | grep -q 1 \
         || sudo -u postgres psql -c "CREATE ROLE core LOGIN"
-    sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='platform'" | grep -q 1 \
-        || sudo -u postgres createdb -O core platform
+    sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1 \
+        || sudo -u postgres createdb -O core "${DB_NAME}"
     local rows
-    rows=$(sudo -u postgres psql -d platform -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='platform'" || echo 0)
+    rows=$(sudo -u postgres psql -d "${DB_NAME}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='platform'" || echo 0)
     if [ "${rows:-0}" -gt 0 ] && [ "$YES" != "1" ]; then
         bad "в базе уже ${rows} таблиц. Заливка поверх требует --yes"
         info "безопаснее: createdb -O core platform2 и восстановить туда, затем переключить строку подключения"
         save_state db refuse; return 1
     fi
     case "$dump" in
-        *.sql) psql "postgresql://core@127.0.0.1/platform" -v ON_ERROR_STOP=1 -f "$dump" | tail -3 ;;
-        *) pg_restore -d "postgresql://core@127.0.0.1/platform" --no-owner "$dump" | tail -3 ;;
+        *.sql) psql "postgresql://core@127.0.0.1/${DB_NAME}" -v ON_ERROR_STOP=1 -f "$dump" | tail -3 ;;
+        *) pg_restore -d "postgresql://core@127.0.0.1/${DB_NAME}" --no-owner "$dump" | tail -3 ;;
     esac
     local after
-    after=$(sudo -u postgres psql -d platform -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='platform'")
+    after=$(sudo -u postgres psql -d "${DB_NAME}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='platform'")
     [ "${after:-0}" -gt 0 ] && { ok "таблиц в базе: $after"; save_state db ok; } || { bad "дамп залился, но таблиц нет"; save_state db fail; return 1; }
 }
 
@@ -168,7 +171,7 @@ step_apps() {
     pm2 save >/dev/null 2>&1
     sleep 5
     local st
-    st=$(curl -sf --max-time 5 http://127.0.0.1:3212/health || true)
+    st=$(curl -sf --max-time 5 "http://127.0.0.1:${CORE_PORT}/health" || true)
     if printf '%s' "$st" | grep -q '"ok":true'; then
         printf '%s' "$st" | python3 -c "import json,sys;d=json.load(sys.stdin);print('загружен',d.get('loaded_commit','?')[:7],'| head',d.get('head','?')[:7],'| stale',d.get('stale'))" || true
         ok "процесс отвечает"; save_state apps ok
@@ -179,6 +182,10 @@ step_apps() {
 
 # ── Шаг 5. Сайт и TLS ───────────────────────────────────────
 step_web() {
+    if [ "$SKIP_WEB" = "1" ]; then
+        info "web пропущен (SKIP_WEB=1): на живом узле nginx не трогаем"
+        save_state web skipped; return 0
+    fi
     printf '\n== web: nginx и сертификаты\n'
     local work="${PIXEL_DATA_DIR}/restore"
     if [ ! -d "$work/nginx" ]; then bad "в снимке нет каталога nginx/"; save_state web fail; return 1; fi
