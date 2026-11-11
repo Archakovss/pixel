@@ -61,6 +61,25 @@ json.dump(d, open(p, 'w'), ensure_ascii=False, indent=1)
 PY
 }
 
+
+# psql-хелперы: sudo есть не везде (на чистом Debian его нет), а мы и так root.
+pg_sql() { # SQL → вывод
+    if command -v sudo >/dev/null 2>&1; then sudo -u postgres psql -tAc "$1"
+    else su -s /bin/sh postgres -c "psql -tAc \"$1\""; fi
+}
+pg_sql_db() { # SQL, БД
+    if command -v sudo >/dev/null 2>&1; then sudo -u postgres psql -d "$2" -tAc "$1"
+    else su -s /bin/sh postgres -c "psql -d '$2' -tAc \"$1\""; fi
+}
+pg_run() { # SQL без вывода
+    if command -v sudo >/dev/null 2>&1; then sudo -u postgres psql -c "$1"
+    else su -s /bin/sh postgres -c "psql -c \"$1\""; fi
+}
+pg_createdb() {
+    if command -v sudo >/dev/null 2>&1; then sudo -u postgres createdb -O core "$1"
+    else su -s /bin/sh postgres -c "createdb -O core '$1'"; fi
+}
+
 healthy_core() {
     curl -sf --max-time 3 "${CORE_HEALTH_URL:-http://127.0.0.1:${CORE_PORT}/health}" 2>/dev/null | grep -q '"ok":true'
 }
@@ -160,19 +179,21 @@ step_db() {
     printf '\n== db: база %s\n' "$DB_NAME"
     local root="${RESTORE_ROOT:-$DATA_DIR/restore/unpacked}"
     local dump
-    dump=$(ls -1 "$root"/db/*.dump "$root"/db/*.sql 2>/dev/null | head -1 || true)
+    # Ядро — это platform. Раньше брался первый по алфавиту (club_saas) — неверно.
+    dump="$root/db/platform.dump"
+    [ -f "$dump" ] || dump=$(ls -1S "$root"/db/*.dump "$root"/db/*.sql 2>/dev/null | head -1 || true)
     [ -n "$dump" ] || { bad "нет дампа в $root/db"; save_state db fail; return 1; }
     info "дамп: $(basename "$dump") ($(du -h "$dump" | cut -f1))"
     run systemctl enable --now postgresql
     if [ "$APPLY" != "1" ]; then info "[сухой прогон] роль core, база ${DB_NAME}, заливка, сверка"; save_state db dry; return 0; fi
 
-    sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='core'" | grep -q 1 \
-        || sudo -u postgres psql -c "CREATE ROLE core LOGIN"
-    sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1 \
-        || sudo -u postgres createdb -O core "${DB_NAME}"
+    pg_sql "SELECT 1 FROM pg_roles WHERE rolname='core'" | grep -q 1 \
+        || pg_run "CREATE ROLE core LOGIN"
+    pg_sql "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1 \
+        || pg_createdb "${DB_NAME}"
 
     local tables
-    tables=$(sudo -u postgres psql -d "${DB_NAME}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='platform'" 2>/dev/null || echo 0)
+    tables=$(pg_sql_db "SELECT count(*) FROM information_schema.tables WHERE table_schema='platform'" "${DB_NAME}" 2>/dev/null || echo 0)
     if [ "${tables:-0}" -gt 0 ] && [ "$YES" != "1" ]; then
         bad "в базе ${DB_NAME} уже ${tables} таблиц — заливка поверх требует --yes"
         save_state db refuse; return 1
@@ -183,7 +204,7 @@ step_db() {
         *) pg_restore -d "postgresql://core@127.0.0.1/${DB_NAME}" --no-owner "$dump" >/dev/null 2>&1 ;;
     esac
     local after
-    after=$(sudo -u postgres psql -d "${DB_NAME}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='platform'" 2>/dev/null || echo 0)
+    after=$(pg_sql_db "SELECT count(*) FROM information_schema.tables WHERE table_schema='platform'" "${DB_NAME}" 2>/dev/null || echo 0)
     if [ "${after:-0}" -gt 0 ]; then ok "таблиц в ${DB_NAME}: $after"; save_state db ok; else bad "таблиц нет — дамп не залился"; save_state db fail; return 1; fi
 }
 
