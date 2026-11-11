@@ -108,6 +108,15 @@ step_preflight() {
         say_info "осознанно: CORE_HEALTH_URL=http://127.0.0.1:1/health restore.sh --apply --yes"
         miss=1
     fi
+
+    # IPv6 — второй путь, если IPv4 попал в блок-лист. Не обязателен, но полезно знать.
+    local v6
+    v6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2; exit}')
+    if [ -n "$v6" ]; then
+        say_ok "IPv6 ${v6} (запасной путь, смена последних 4 hex — бесплатно)"
+    else
+        say_info "IPv6 нет — при блокировке IPv4 останется только смена хостера"
+    fi
     return "$miss"
 }
 
