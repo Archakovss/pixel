@@ -29,6 +29,7 @@ CORE_PORT="${CORE_PORT:-3212}"
 SKIP_WEB="${SKIP_WEB:-0}"
 CORE_DIR="${CORE_DIR:-/root/orencode}"
 RESTORE_ROOT=""
+SRC=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -99,22 +100,37 @@ step_snapshot() {
             info "скачиваю $FROM"
             run aws s3 cp "$FROM" "$work/" --recursive --only-show-errors
             ;;
-        *) work="$(dirname "$FROM")"; info "беру локальный файл $FROM" ;;
+        *)
+            if [ -f "$FROM" ]; then
+                # Явно указанный файл важнее маски: рядом могут лежать другие архивы.
+                SRC="$FROM"; work="$(dirname "$FROM")"
+                info "беру указанный файл $FROM"
+            else
+                work="$FROM"; SRC=""; info "беру каталог $FROM"
+            fi
+            ;;
     esac
     if [ "$APPLY" != "1" ]; then info "[сухой прогон] расшифровка и распаковка пропущены"; save_state snapshot dry; return 0; fi
 
     local unpack="$DATA_DIR/restore/unpacked"
     rm -rf "$unpack"; mkdir -p "$unpack"
     local enc
-    enc=$(ls -1 "$work"/*.tar.gz.gpg 2>/dev/null | head -1 || true)
+    if [ -n "${SRC:-}" ]; then enc="$SRC"; else enc=$(ls -1 "$work"/*.tar.gz.gpg 2>/dev/null | head -1 || true); fi
     if [ -n "$enc" ]; then
         [ -n "$PASS_FILE" ] && [ -r "$PASS_FILE" ] || { bad "нужен --passphrase-file"; save_state snapshot fail; return 1; }
         info "расшифровываю $(basename "$enc")"
         gpg --batch --quiet --yes --passphrase-file "$PASS_FILE" --decrypt "$enc" > "$work/snapshot.tar.gz" \
             || { bad "расшифровка не удалась (пароль?)"; save_state snapshot fail; return 1; }
     else
-        cp "$work"/*.tar.gz "$work/snapshot.tar.gz" 2>/dev/null \
-            || { bad "нет архива .tar.gz/.gpg"; save_state snapshot fail; return 1; }
+        if [ -n "${SRC:-}" ]; then
+            cp "$SRC" "$work/snapshot.tar.gz" \
+                || { bad "не скопировать $SRC"; save_state snapshot fail; return 1; }
+        else
+            local plain
+            plain=$(ls -1 "$work"/*.tar.gz 2>/dev/null | head -1 || true)
+            [ -n "$plain" ] || { bad "нет архива .tar.gz/.gpg"; save_state snapshot fail; return 1; }
+            cp "$plain" "$work/snapshot.tar.gz" || { bad "не скопировать $plain"; save_state snapshot fail; return 1; }
+        fi
     fi
     tar xzf "$work/snapshot.tar.gz" -C "$unpack" || { bad "архив не распаковывается"; save_state snapshot fail; return 1; }
     RESTORE_ROOT="$unpack"
