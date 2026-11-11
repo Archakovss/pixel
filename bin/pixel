@@ -1,0 +1,92 @@
+#!/bin/bash
+# pixel — Пиксель: терминал Ядра и инструмент «Армагеддона».
+#
+# Работает на сервере Ядра, на чужом сервере и локально.
+# Не зависит от шлюза Ядра: в режиме auto сначала пробует шлюз, а если он мёртв —
+# идёт к провайдеру напрямую. Иначе Пиксель не смог бы поднять то, через что сам ходит.
+#
+# Использование:
+#   pixel                  — интерактивный терминал
+#   pixel "задача"         — один прогон без REPL
+#   pixel doctor           — чего не хватает на машине
+#   pixel status           — состояние Ядра и Пикселя
+#   pixel recover          — подъём по карточке восстановления
+set -eu
+
+CONFIG="${PIXEL_CONFIG:-$HOME/.pixel/config.json}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+cfg() { # cfg <путь.через.точку> <по умолчанию>
+    python3 - "$CONFIG" "$1" "$2" <<'PY' 2>/dev/null || echo "$2"
+import json, sys
+conf, path, default = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    d = json.load(open(conf))
+    for part in path.split('.'):
+        d = d[part]
+except Exception:
+    d = default
+print(d if d not in (None, '') else default)
+PY
+}
+
+if [ ! -r "$CONFIG" ]; then
+    echo "pixel: нет конфига $CONFIG" >&2
+    echo "pixel: скопируй config.example.json в \$HOME/.pixel/config.json" >&2
+    exit 2
+fi
+
+AGENT="${PIXEL_AGENT:-$HERE/pixel.mjs}"
+GW_URL=$(cfg gateway.url 'http://127.0.0.1:3212')
+GW_TOKEN_FILE=$(cfg gateway.tokenFile "$HOME/.pixel/gateway.token")
+PR_URL=$(cfg provider.baseUrl 'https://api.deepseek.com/anthropic')
+PR_MODEL=$(cfg provider.model 'deepseek-v4-flash')
+PR_KEY_FILE=$(cfg provider.keyFile "$HOME/.pixel/provider.key")
+MODE=$(cfg mode 'auto')
+MODEL=$(cfg model '')
+
+use_direct=0
+case "$MODE" in
+    direct) use_direct=1 ;;
+    gateway) use_direct=0 ;;
+    auto)
+        # Шлюз жив — идём через него (учёт, failover, одна точка).
+        # Мёртв — напрямую к провайдеру: именно в этот момент Пиксель и нужен.
+        if ! curl -sf --max-time 2 "$GW_URL/health" >/dev/null 2>&1; then
+            use_direct=1
+        fi
+        ;;
+esac
+
+if [ "$use_direct" = "1" ]; then
+    if [ ! -r "$PR_KEY_FILE" ]; then
+        echo "pixel: шлюз недоступен и нет ключа провайдера $PR_KEY_FILE" >&2
+        echo "pixel: положи ключ в этот файл (chmod 600) — без него терминал не поднимется" >&2
+        exit 3
+    fi
+    export YADRO_GATEWAY="$PR_URL"
+    export YADRO_TOKEN="$(cat "$PR_KEY_FILE")"
+    export YADRO_MODEL="${MODEL:-$PR_MODEL}"
+    echo "pixel: шлюз недоступен — работаю напрямую с провайдером ($PR_MODEL)" >&2
+else
+    export YADRO_GATEWAY="$GW_URL"
+    [ -r "$GW_TOKEN_FILE" ] && export YADRO_TOKEN="$(cat "$GW_TOKEN_FILE")"
+    [ -n "$MODEL" ] && export YADRO_MODEL="$MODEL"
+fi
+
+if [ ! -f "$AGENT" ]; then
+    echo "pixel: движок не найден: $AGENT" >&2
+    exit 2
+fi
+
+case "${1:-}" in
+    doctor)  exec node "$AGENT" --pixel doctor ;;
+    status)  exec node "$AGENT" --pixel status ;;
+    recover) shift || true; exec node "$AGENT" --pixel recover "$@" ;;
+esac
+
+if [ $# -gt 0 ]; then
+    export YADRO_TASK="$*"
+fi
+
+exec node "$AGENT"

@@ -1,0 +1,16 @@
+{
+  "mode": "auto",
+  "agent": "",
+  "model": "",
+  "gateway": {
+    "url": "http://127.0.0.1:3212",
+    "tokenFile": "~/.pixel/gateway.token"
+  },
+  "provider": {
+    "baseUrl": "https://api.deepseek.com/anthropic",
+    "model": "deepseek-v4-flash",
+    "keyFile": "~/.pixel/provider.key"
+  },
+  "dataDir": "~/.pixel/data",
+  "session": "pixel"
+}
