@@ -80,6 +80,22 @@ pg_createdb() {
     else su -s /bin/sh postgres -c "createdb -O core '$1'"; fi
 }
 
+
+pg_restore_file() { # файл дампа → в базу, от суперпользователя postgres через сокет
+    if command -v sudo >/dev/null 2>&1; then
+        sudo -u postgres pg_restore -d "$DB_NAME" --no-owner "$1"
+    else
+        su -s /bin/sh postgres -c "pg_restore -d '$DB_NAME' --no-owner '$1'"
+    fi
+}
+pg_apply_sql() {
+    if command -v sudo >/dev/null 2>&1; then
+        sudo -u postgres psql -d "$DB_NAME" -v ON_ERROR_STOP=1 -f "$1"
+    else
+        su -s /bin/sh postgres -c "psql -d '$DB_NAME' -v ON_ERROR_STOP=1 -f '$1'"
+    fi
+}
+
 healthy_core() {
     curl -sf --max-time 3 "${CORE_HEALTH_URL:-http://127.0.0.1:${CORE_PORT}/health}" 2>/dev/null | grep -q '"ok":true'
 }
@@ -199,10 +215,16 @@ step_db() {
         save_state db refuse; return 1
     fi
 
+    # Заливаем от postgres через локальный сокет: TCP-пароль на свежей машине не настроен.
     case "$dump" in
-        *.sql) psql "postgresql://core@127.0.0.1/${DB_NAME}" -v ON_ERROR_STOP=1 -f "$dump" >/dev/null 2>&1 ;;
-        *) pg_restore -d "postgresql://core@127.0.0.1/${DB_NAME}" --no-owner "$dump" >/dev/null 2>&1 ;;
+        *.sql) pg_apply_sql "$dump" >/tmp/pg-restore.log 2>&1 ;;
+        *) pg_restore_file "$dump" >/tmp/pg-restore.log 2>&1 ;;
     esac
+    local rrc=$?
+    if [ "$rrc" != "0" ]; then
+        bad "pg_restore/psql вернул $rrc, хвост лога:"
+        tail -5 /tmp/pg-restore.log | sed 's/^/    /'
+    fi
     local after
     after=$(pg_sql_db "SELECT count(*) FROM information_schema.tables WHERE table_schema='platform'" "${DB_NAME}" 2>/dev/null || echo 0)
     if [ "${after:-0}" -gt 0 ]; then ok "таблиц в ${DB_NAME}: $after"; save_state db ok; else bad "таблиц нет — дамп не залился"; save_state db fail; return 1; fi
