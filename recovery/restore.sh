@@ -229,8 +229,27 @@ step_web() {
     local root="${RESTORE_ROOT:-$DATA_DIR/restore/unpacked}"
     [ -d "$root/configs/nginx" ] || { say_bad "в снимке нет configs/nginx"; return 1; }
     run bash -c "cp -a '$root/configs/nginx/.' /etc/nginx/sites-available/"
+
+    # Домен мог уйти вместе с регистратором: тогда работаем на запасном.
+    # DOMAIN=new.example  → подменяем server_name во всех конфигах и берём сертификат.
+    if [ -n "${DOMAIN:-}" ] && [ "$DOMAIN" != "fridaybot.ru" ]; then
+        say_info "перевожу сайты на домен ${DOMAIN}"
+        run bash -c "grep -rl 'fridaybot\\.ru' /etc/nginx/sites-available/ 2>/dev/null | xargs -r sed -i 's/fridaybot\\.ru/${DOMAIN}/g'"
+        say_ok "server_name и ссылки в конфигах заменены на ${DOMAIN}"
+        say_info "после reload: certbot --nginx -d ${DOMAIN} -d www.${DOMAIN}"
+    fi
+
     run nginx -t && run systemctl reload nginx
     say_ok "nginx перезагружен"
+
+    if [ -n "${DOMAIN:-}" ] && [ "$DOMAIN" != "fridaybot.ru" ]; then
+        say_info "checklist после смены домена (сделать руками):"
+        say_info "  1) DNS нового домена → IP этого сервера"
+        say_info "  2) Яндекс OAuth: redirect URI → https://${DOMAIN}/core/oauth/callback"
+        say_info "  3) Telegram: setWebhook на https://${DOMAIN}/..."
+        say_info "  4) S3: CORS и ссылки в письмах/ботах"
+        say_info "  5) проверить панель и один клиентский сайт"
+    fi
 }
 
 # ── 6. accept ───────────────────────────────────────────────
